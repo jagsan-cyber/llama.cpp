@@ -30,7 +30,12 @@
     #include <fcntl.h>
 #endif
 
-#define ASYNCIO_CONCURRENCY 64
+#ifdef _WIN32
+    // Force single-threaded execution on Windows to avoid parallel glslc race conditions
+    #define ASYNCIO_CONCURRENCY 1
+#else
+    #define ASYNCIO_CONCURRENCY 64
+#endif
 
 std::mutex lock;
 std::vector<std::pair<std::string, std::string>> shader_fnames;
@@ -41,6 +46,8 @@ std::string input_filepath = "";
 std::string output_dir = "/tmp";
 std::string target_hpp = "";
 std::string target_cpp = "";
+bool g_serialized_mode = false;
+std::vector<std::string> g_shader_list;
 
 const std::vector<std::string> type_names = {
     "f32",
@@ -1207,6 +1214,34 @@ int main(int argc, char** argv) {
     }
     if (args.find("--target-cpp") != args.end()) {
         target_cpp = args["--target-cpp"]; // Path to generated cpp file
+    }
+    if (args.find("--serialized") != args.end()) {
+        g_serialized_mode = true;
+    }
+    if (args.find("--shader-list") != args.end()) {
+        std::string shader_list_str = args["--shader-list"];
+        std::stringstream ss(shader_list_str);
+        std::string shader;
+        while (std::getline(ss, shader, ';')) {
+            if (!shader.empty()) {
+                g_shader_list.push_back(shader);
+            }
+        }
+    }
+
+    // If serialized mode with shader list, process each shader one at a time
+    if (g_serialized_mode && !g_shader_list.empty()) {
+        std::cout << "Running in SERIALIZED mode for Windows compatibility\n";
+        
+        // Process each shader file serially
+        for (const auto& shader_path : g_shader_list) {
+            input_filepath = shader_path;
+            std::cout << "Compiling: " << shader_path << "\n";
+            process_shaders();
+        }
+        
+        write_output_files();
+        return EXIT_SUCCESS;
     }
 
     if (!directory_exists(output_dir)) {

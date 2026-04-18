@@ -183,37 +183,38 @@ if (Vulkan_FOUND)
               CONFIGURE_DEPENDS "${_ggml_vk_input_dir}/*.cpp"
                                 "${_ggml_vk_input_dir}/*.h")
 
+    # Serialize all shader compilations to avoid parallel glslc race conditions
+    # Windows glslc has issues when multiple instances run concurrently
+    # Join shader files with semicolons for passing to the generator
+    string(REPLACE ";" "\\;" _shader_files_escaped "${_ggml_vk_shader_files}")
+    list(JOIN _ggml_vk_shader_files ";" _shader_files_list)
+
+    # Single output file for all compiled shaders
+    set(_vulkan_shaders_output "${CMAKE_CURRENT_BINARY_DIR}/vulkan-shaders-all.cpp")
+
+    # Create output directory before compiling shaders
+    file(MAKE_DIRECTORY "${_ggml_vk_output_dir}")
+
+    # Create a single custom command to compile ALL shaders serially
+    # This fixes the parallel glslc race condition on Windows
     add_custom_command(
-        OUTPUT ${_ggml_vk_header}
+        OUTPUT ${_vulkan_shaders_output}
+               ${_ggml_vk_header}
+        COMMAND ${CMAKE_COMMAND} -E echo "Generating vulkan shaders (serialized for Windows compatibility)"
         COMMAND ${_ggml_vk_genshaders_cmd}
             --output-dir ${_ggml_vk_output_dir}
             --target-hpp ${_ggml_vk_header}
+            --target-cpp ${_vulkan_shaders_output}
+            --glslc ${Vulkan_GLSLC_EXECUTABLE}
+            --shader-list "${_shader_files_list}"
+            --serialized
         DEPENDS ${_ggml_vk_shaders_gen_sources}
                 vulkan-shaders-gen
-        COMMENT "Generate vulkan shaders header"
+                ${_ggml_vk_shader_files}
+        COMMENT "Generate all vulkan shaders (serialized)"
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
     )
-    target_sources(ggml-vulkan PRIVATE ${_ggml_vk_header})
-
-    foreach (file_full ${_ggml_vk_shader_files})
-        get_filename_component(file ${file_full} NAME)
-        set (_ggml_vk_target_cpp "${CMAKE_CURRENT_BINARY_DIR}/${file}.cpp")
-
-        add_custom_command(
-            OUTPUT  ${_ggml_vk_target_cpp}
-            DEPFILE ${_ggml_vk_target_cpp}.d
-            COMMAND ${_ggml_vk_genshaders_cmd}
-                --glslc      ${Vulkan_GLSLC_EXECUTABLE}
-                --source     ${file_full}
-                --output-dir ${_ggml_vk_output_dir}
-                --target-hpp ${_ggml_vk_header}
-                --target-cpp ${_ggml_vk_target_cpp}
-            DEPENDS ${file_full}
-                    ${_ggml_vk_shaders_gen_sources}
-                    vulkan-shaders-gen
-            COMMENT "Generate vulkan shaders for ${file}"
-        )
-        target_sources(ggml-vulkan PRIVATE ${_ggml_vk_target_cpp})
-    endforeach()
+    target_sources(ggml-vulkan PRIVATE ${_vulkan_shaders_output})
 
 else()
     message(WARNING "Vulkan not found")

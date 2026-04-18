@@ -244,6 +244,7 @@ void main() {
                     }
 
                     FLOAT_TYPEV4 K_Tf;
+                    FLOAT_TYPEV4 V_Tf;
                     if (SHMEM_STAGING != 0) {
 #if defined(DATA_A_TQ4_0)
                         uint k_block = c * cols_per_iter + col_tid;
@@ -252,10 +253,6 @@ void main() {
                                            tq_k_shmem[k_block * 128 + k_offset_elem + 1],
                                            tq_k_shmem[k_block * 128 + k_offset_elem + 2],
                                            tq_k_shmem[k_block * 128 + k_offset_elem + 3]);
-                        V_Tf = FLOAT_TYPEV4(tq_v_shmem[v_block * 128 + v_offset_elem],
-                                           tq_v_shmem[v_block * 128 + v_offset_elem + 1],
-                                           tq_v_shmem[v_block * 128 + v_offset_elem + 2],
-                                           tq_v_shmem[v_block * 128 + v_offset_elem + 3]);
 #else
                         K_Tf = kvsh[(c * cols_per_iter + col_tid) * kvsh_stride + (d * D_split + d_tid)];
 #endif
@@ -282,6 +279,7 @@ void main() {
 
                 [[unroll]] for (uint32_t d = 0; d < HSK_per_thread / 4; ++d) {
                     FLOAT_TYPEV4 K_Tf;
+                    FLOAT_TYPEV4 V_Tf;
                     if (SHMEM_STAGING != 0) {
 #if defined(DATA_A_TQ4_0)
                         uint k_block = c * cols_per_iter + col_tid;
@@ -290,10 +288,6 @@ void main() {
                                            tq_k_shmem[k_block * 128 + k_offset_elem + 1],
                                            tq_k_shmem[k_block * 128 + k_offset_elem + 2],
                                            tq_k_shmem[k_block * 128 + k_offset_elem + 3]);
-                        V_Tf = FLOAT_TYPEV4(tq_v_shmem[v_block * 128 + v_offset_elem],
-                                           tq_v_shmem[v_block * 128 + v_offset_elem + 1],
-                                           tq_v_shmem[v_block * 128 + v_offset_elem + 2],
-                                           tq_v_shmem[v_block * 128 + v_offset_elem + 3]);
 #else
                         K_Tf = kvsh[(c * cols_per_iter + col_tid) * kvsh_stride + (d * D_split + d_tid)];
 #endif

@@ -2336,6 +2336,13 @@ void dequantize_row_tq2_0(const block_tq2_0 * GGML_RESTRICT x, float * GGML_REST
     }
 }
 
+static const float tq40_centroids[16] = {
+    -0.9613f, -0.8315f, -0.6895f, -0.5345f,
+    -0.3681f, -0.1951f, -0.0980f,  0.0000f,
+     0.0980f,  0.1951f,  0.3681f,  0.5345f,
+     0.6895f,  0.8315f,  0.9613f,  0.9903f
+};
+
 void dequantize_row_tq4_0(const block_tq4_0 * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k) {
     assert(k % QK_TQ4_0 == 0);
     const int64_t nb = k / QK_TQ4_0;
@@ -2344,8 +2351,8 @@ void dequantize_row_tq4_0(const block_tq4_0 * GGML_RESTRICT x, float * GGML_REST
         const float d = GGML_FP16_TO_FP32(x[i].d);
         for (int j = 0; j < QK_TQ4_0/2; ++j) {
             uint8_t v = x[i].qs[j];
-            y[2*j + 0] = (float)(v & 0x0F) * d;
-            y[2*j + 1] = (float)((v >> 4) & 0x0F) * d;
+            y[2*j + 0] = tq40_centroids[v & 0x0F] * d;
+            y[2*j + 1] = tq40_centroids[(v >> 4) & 0x0F] * d;
         }
         y += QK_TQ4_0;
     }
@@ -2354,129 +2361,31 @@ void dequantize_row_tq4_0(const block_tq4_0 * GGML_RESTRICT x, float * GGML_REST
 size_t quantize_row_tq4_0_ref(const float * GGML_RESTRICT src, block_tq4_0 * GGML_RESTRICT y, int64_t k) {
     assert(k % QK_TQ4_0 == 0);
     const int64_t nb = k / QK_TQ4_0;
-
     const int d = QK_TQ4_0;
-    const float inv_sqrt_d = 1.0f / sqrtf((float)d);
-
-#define TQ_SEED_ROTATION 0xDEADBEEFULL
-#define TQ_SEED_QJL 0xCAFEBABEULL
-
-    static float sign1[128] = {0};
-    static float sign2[128] = {0};
-    static float qjl_proj[128*128] = {0};
-    static bool initialized = false;
-
-    if (!initialized) {
-        uint64_t rng_rot1_state = TQ_SEED_ROTATION ^ 0x1;
-        for (int i = 0; i < d; i++) {
-            rng_rot1_state = rng_rot1_state * 1103515245 + 12345;
-            sign1[i] = ((rng_rot1_state >> 1) & 1) ? 1.0f : -1.0f;
-        }
-
-        uint64_t rng_rot2_state = TQ_SEED_ROTATION ^ 0x2;
-        for (int i = 0; i < d; i++) {
-            rng_rot2_state = rng_rot2_state * 1103515245 + 12345;
-            sign2[i] = ((rng_rot2_state >> 1) & 1) ? 1.0f : -1.0f;
-        }
-
-        uint64_t rng_qjl_state = TQ_SEED_QJL ^ 0xA;
-        for (int i = 0; i < d; i++) {
-            float row[256];
-            float norm2 = 0.0f;
-            for (int j = 0; j < d; j++) {
-                rng_qjl_state = rng_qjl_state * 1103515245 + 12345;
-                float u = (float)(rng_qjl_state & 0xFFFFFF) / (float)(0x1000000);
-                float v = (float)((rng_qjl_state >> 24) & 0xFFFFFF) / (float)(0x1000000);
-                float gaussian = sqrtf(-2.0f * logf(u + 1e-10f)) * cosf(2.0f * 3.14159265358979f * v);
-                row[j] = gaussian;
-                norm2 += row[j] * row[j];
-            }
-            float inv_norm = (norm2 > 0.0f) ? 1.0f / sqrtf(norm2) : 1.0f;
-            for (int j = 0; j < d; j++) {
-                qjl_proj[i * d + j] = row[j] * inv_norm;
-            }
-        }
-        initialized = true;
-    }
 
     for (int64_t i = 0; i < nb; ++i) {
-        float x_orig[128];
-        float x_rot[128];
-        float x_wht[128];
-        float recon[128];
-
+        float amax = 1e-10f;
         for (int j = 0; j < d; j++) {
-            x_orig[j] = src[j];
-            x_rot[j] = x_orig[j] * sign1[j];
+            amax = fmaxf(amax, fabsf(src[j]));
         }
-
-        for (int s = 1; s < d; s <<= 1) {
-            for (int i_g = 0; i_g < d; i_g += s * 2) {
-                for (int j = 0; j < s; j++) {
-                    float u = x_rot[i_g + j];
-                    float v = x_rot[i_g + s + j];
-                    x_rot[i_g + j] = u + v;
-                    x_rot[i_g + s + j] = u - v;
-                }
-            }
-        }
-
-        for (int j = 0; j < d; j++) {
-            x_wht[j] = x_rot[j] * sign2[j] * inv_sqrt_d;
-        }
-
-        float amax = 0.0f;
-        for (int j = 0; j < d; j++) {
-            amax = MAX(amax, fabsf(x_wht[j]));
-        }
-        const float d_val = amax ? amax : 1.0f;
-        const float id = 1.0f / d_val;
-        y[i].d = GGML_FP32_TO_FP16(d_val);
-
-        for (int j = 0; j < d; j++) {
-            recon[j] = x_wht[j] * d_val;
-        }
+        const float id = 1.0f / amax;
+        y[i].d = GGML_FP32_TO_FP16(amax);
 
         for (int j = 0; j < d/2; ++j) {
-            int x0 = (int)(x_wht[2*j + 0] * id * 15.0f + 0.5f);
-            int x1 = (int)(x_wht[2*j + 1] * id * 15.0f + 0.5f);
-            x0 = MAX(0, MIN(15, x0));
-            x1 = MAX(0, MIN(15, x1));
-            y[i].qs[j] = (uint8_t)((x1 << 4) | x0);
-        }
+            float v0 = src[2*j + 0] * id;
+            float v1 = src[2*j + 1] * id;
 
-        for (int j = 0; j < d; j++) {
-            x_rot[j] = x_wht[j] * sign2[j];
-        }
-        for (int s = 1; s < d; s <<= 1) {
-            for (int i_g = 0; i_g < d; i_g += s * 2) {
-                for (int j = 0; j < s; j++) {
-                    float u = x_rot[i_g + j];
-                    float v = x_rot[i_g + s + j];
-                    x_rot[i_g + j] = u + v;
-                    x_rot[i_g + s + j] = u - v;
-                }
+            int best_idx0 = 7; float best_dist0 = 1e10f;
+            int best_idx1 = 7; float best_dist1 = 1e10f;
+            for (int ki = 0; ki < 16; ki++) {
+                float dist0 = fabsf(v0 - tq40_centroids[ki]);
+                float dist1 = fabsf(v1 - tq40_centroids[ki]);
+                if (dist0 < best_dist0) { best_dist0 = dist0; best_idx0 = ki; }
+                if (dist1 < best_dist1) { best_dist1 = dist1; best_idx1 = ki; }
             }
+            y[i].qs[j] = (uint8_t)((best_idx1 << 4) | best_idx0);
         }
-        for (int j = 0; j < d; j++) {
-            x_rot[j] = x_rot[j] * sign1[j] * inv_sqrt_d;
-        }
-
-        float residual[128];
-        for (int j = 0; j < d; j++) {
-            residual[j] = x_orig[j] - x_rot[j];
-        }
-
-        const float qjl_scale = (float)(3.14159265358979 * 0.5) / (float)d;
-        for (int j = 0; j < d; j++) {
-            float proj = 0.0f;
-            for (int kk = 0; kk < d; kk++) {
-                proj += qjl_proj[j * d + kk] * residual[kk];
-            }
-            int qjl_sign = (proj >= 0.0f) ? 1 : 0;
-            y[i].qjl[j / 8] |= (qjl_sign << (j % 8));
-        }
-
+        memset(y[i].qjl, 0, sizeof(y[i].qjl));
         src += QK_TQ4_0;
     }
     return nb * sizeof(block_tq4_0);

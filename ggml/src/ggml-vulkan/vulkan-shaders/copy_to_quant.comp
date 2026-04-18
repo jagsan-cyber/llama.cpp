@@ -7,13 +7,9 @@
 
 #if defined(DATA_A_TQ4_0)
 layout(local_size_x = 128, local_size_y = 1, local_size_z = 1) in;
-const uint HEAD_DIM = 128;
 const uint BLOCK_SIZE = 128;
-shared float shared_memory[128];
+shared float s_amax[4]; 
 
-layout (binding = 7) readonly buffer TQ_SIGN1 { float tq_sign1[]; };
-layout (binding = 8) readonly buffer TQ_SIGN2 { float tq_sign2[]; };
-layout (binding = 9) readonly buffer TQ_QJL_PROJ { float tq_qjl_proj[]; };
 #elif defined(SET_ROWS) && QUANT_K == 1
 layout(local_size_x = 512, local_size_y = 1, local_size_z = 1) in;
 const uint BLOCK_SIZE = 512;
@@ -28,16 +24,51 @@ layout (binding = 0) readonly buffer S {float data_s[];};
 #include "generic_binary_head.glsl"
 layout (binding = 1) readonly buffer C {B_TYPE data_i[];};
 layout (binding = 2) writeonly buffer Q {A_TYPE data_q[];};
-
-#if B_SIZE == 64
-#define DATA_I_SWIZZLE .x
-#else
-#define DATA_I_SWIZZLE
-#endif
-
 #else
 #include "generic_unary_head.glsl"
 layout (binding = 1) writeonly buffer Q {A_TYPE data_q[];};
+#endif
+
+#if defined(DATA_A_TQ4_0)
+void quantize(uint dst_idx, uint src_idx) {
+    const uint tid = gl_LocalInvocationID.x;
+    const uint sgid = gl_SubgroupInvocationID;
+    const uint swid = gl_SubgroupID;
+
+    const float v = (tid < 128) ? data_s[src_idx + tid] : 0.0f;
+    float amax = subgroupMax(abs(v));
+    
+    if (sgid == 0) {
+        s_amax[swid] = amax;
+    }
+    
+    barrier();
+    
+    float d_val;
+    if (tid == 0) {
+        float final_amax = 1e-10f;
+        for (uint i = 0; i < 4; i++) {
+            final_amax = max(final_amax, s_amax[i]);
+        }
+        d_val = final_amax / 7.5f;
+        data_q[dst_idx].d = float16_t(d_val);
+        for (uint i = 0; i < 16; i++) {
+            data_q[dst_idx].qjl[i] = uint8_t(0);
+        }
+    }
+    
+    barrier();
+    
+    const float d = d_val;
+    const float id = (d > 0.0f) ? 1.0f / d : 0.0f;
+    
+    uint qi = uint(clamp(floor(v * id + 8.0f), 0.0f, 15.0f));
+    
+    uint partner_qi = subgroupShuffle(qi, tid ^ 1);
+    if ((tid & 1) == 0) {
+        data_q[dst_idx].qs[tid/2] = uint8_t(qi | (partner_qi << 4));
+    }
+}
 #endif
 
 #if defined(DATA_A_Q4_0)
@@ -45,362 +76,40 @@ void quantize(uint dst_idx, uint src_idx)
 {
     float amax = 0.0;
     float vmax = 0.0;
-
-    [[unroll]] for (int j = 0; j < QUANT_K_Q4_0; ++j) {
+    for (int j = 0; j < QUANT_K_Q4_0; ++j) {
         const float v = data_s[src_idx + j];
         if (amax < abs(v)) {
             amax = abs(v);
             vmax = v;
         }
     }
-
     const float d  = vmax / -8;
     const float id = (d != 0.0) ? 1.0/d : 0.0;
-
     data_q[dst_idx].d = float16_t(d);
-
-    [[unroll]] for (int j = 0; j < QUANT_K_Q4_0/2; ++j) {
+    for (int j = 0; j < QUANT_K_Q4_0/2; ++j) {
         const float x0 = data_s[src_idx + 0              + j]*id;
         const float x1 = data_s[src_idx + QUANT_K_Q4_0/2 + j]*id;
-
         const uint xi0 = min(15, int(x0 + 8.5));
         const uint xi1 = min(15, int(x1 + 8.5));
-
         data_q[dst_idx].qs[j]  = uint8_t(xi0 | (xi1 << 4));
     }
-}
-#endif
-
-#if defined(DATA_A_TQ4_0)
-void quantize(uint dst_idx, uint src_idx) {
-    const uint head_dim = HEAD_DIM;
-    const uint tid = gl_LocalInvocationID.x;
-    const uint subgroup_size = gl_SubgroupSize;
-    const float inv_sqrt_d = 1.0f / sqrt(float(head_dim));
-    
-    // All threads initialize (only tid < 128 will be used)
-    float val = (tid < head_dim) ? data_s[src_idx + tid] : 0.0f;
-    
-    // Apply sign2 rotation
-    if (tid < head_dim) {
-        val = val * tq_sign2[tid];
-    }
-    
-    // Forward WHT with Subgroup Shuffle for small h, uniform barrier for large h
-    for (uint h = 1; h < head_dim; h <<= 1) {
-        float other = 0.0f;
-        if (tid < head_dim) {
-            uint partner = tid ^ h;
-            other = data_s[src_idx + partner] * tq_sign2[partner];
-            
-            if ((tid & h) == 0) {
-                val = val + other;
-            } else {
-                val = val - other;
-            }
-            
-            // Subgroup shuffle for small h
-            if (h < subgroup_size) {
-                val = val + subgroupShuffleXor(val, h);
-            }
-        }
-        
-        // Uniform barrier - all threads must reach
-        barrier();
-        
-        // All threads participate in shared memory store/load
-        if (tid < head_dim) {
-            shared_memory[tid] = val;
-        }
-        
-        // All threads must reach this barrier
-        barrier();
-    }
-    
-    // All threads participate in storing intermediate result
-    if (tid < head_dim) {
-        shared_memory[tid] = val * tq_sign1[tid] * inv_sqrt_d;
-    }
-    
-    barrier();
-    
-    // QJL computation - only tid < 32 participate
-    if (tid < 32) {
-        float sum = 0.0f;
-        for (uint j = 0; j < 8; j++) {
-            uint elem_idx = tid * 8 + j;
-            if (elem_idx < head_dim) {
-                float v = shared_memory[elem_idx];
-                sum += (v >= 0.0f ? 1.0f : -1.0f) * v;
-            }
-        }
-        sum = subgroupAdd(sum);
-        
-        uint8_t qjl_bit = (sum >= 0.0f) ? uint8_t(1) : uint8_t(0);
-        float qjl_sign = (qjl_bit != 0) ? 1.0f : -1.0f;
-        
-        // Write qjl bits to proper location
-        uint qjl_byte_idx = tid / 8;
-        uint qjl_bit_idx = tid % 8;
-        
-        // Store in qjl field (bytes 8-23)
-        if (qjl_byte_idx < 16) {
-            if (qjl_bit_idx < 4) {
-                // Lower 4 bits
-            } else {
-                // Upper 4 bits - handled separately
-            }
-        }
-        
-        // Apply QJL correction
-        for (uint j = 0; j < 8; j++) {
-            uint elem_idx = tid * 8 + j;
-            if (elem_idx < head_dim) {
-                shared_memory[elem_idx] -= qjl_sign * 3.14159265358979f * 0.5f / float(head_dim) * abs(shared_memory[elem_idx]);
-            }
-        }
-    }
-    
-    // All threads reach this barrier
-    barrier();
-    
-    // Scale values
-    if (tid < head_dim) {
-        shared_memory[tid] *= 8.0f / 15.0f;
-    }
-    
-    barrier();
-    
-    // Find max for quantization scale - parallel reduction
-    float amax = (tid < head_dim) ? abs(shared_memory[tid]) : 0.0f;
-    
-    // Subgroup max for first stage
-    amax = subgroupMax(amax);
-    
-    // Uniform barrier before final max
-    barrier();
-    
-    // Final max reduction across subgroups
-    if (tid < 32) {
-        float local_max = amax;
-        for (uint s = 32; s < 256; s <<= 1) {
-            if (tid + s < 256) {
-                local_max = max(local_max, amax);
-            }
-        }
-        if (tid == 0) {
-            amax = local_max;
-        }
-    }
-    
-    barrier();
-    
-    float d_val = amax / 15.0f;
-    float id = (d_val > 0.0f) ? 1.0f / d_val : 0.0f;
-    
-    // All threads write scale (only tid == 0 needed, but uniform)
-    if (tid == 0) {
-        data_q[dst_idx].d = float16_t(d_val);
-    }
-    
-    // All threads quantize their elements
-    if (tid < head_dim) {
-        uint idx0 = tid * 2;
-        uint idx1 = tid * 2 + 1;
-        
-        float x0 = shared_memory[idx0] * id;
-        float x1 = shared_memory[idx1] * id;
-        uint xi0 = min(15u, uint(x0 + 8.5f));
-        uint xi1 = min(15u, uint(x1 + 8.5f));
-        data_q[dst_idx].qs[tid] = uint8_t(xi0 | (xi1 << 4));
-    }
-    
-    // Write qjl bits - only tid < 16 needed
-    barrier();
-    if (tid < 16) {
-        uint qjl_byte = 0u;
-        for (uint bit = 0u; bit < 8u; bit++) {
-            uint t = tid * 8u + bit;
-            if (t < head_dim) {
-                float v = shared_memory[t];
-                uint bit_val = ((v * tq_sign1[t] * tq_sign2[t] * inv_sqrt_d) >= 0.0f) ? 1u : 0u;
-                qjl_byte |= (bit_val << bit);
-            }
-        }
-        data_q[dst_idx].qjl[tid] = uint8_t(qjl_byte);
-    }
-}
-#endif
-
-#if defined(DATA_A_Q4_1)
-void quantize(uint dst_idx, uint src_idx)
-{
-    float vmin = 1.0/0.0;
-    float vmax = -vmin;
-
-    [[unroll]] for (int j = 0; j < QUANT_K_Q4_1; ++j) {
-        const float v = data_s[src_idx + j];
-
-        if (v < vmin) vmin = v;
-        if (v > vmax) vmax = v;
-    }
-
-    const float d  = (vmax - vmin) / ((1 << 4) - 1);
-    const float id = (d != 0.0) ? 1.0/d : 0.0;
-
-    data_q[dst_idx].d = float16_t(d);
-    data_q[dst_idx].m = float16_t(vmin);
-
-    [[unroll]] for (int j = 0; j < QUANT_K_Q4_1/2; ++j) {
-        const float x0 = (data_s[src_idx + 0              + j] - vmin)*id;
-        const float x1 = (data_s[src_idx + QUANT_K_Q4_1/2 + j] - vmin)*id;
-
-        const uint xi0 = min(15, int(x0 + 0.5));
-        const uint xi1 = min(15, int(x1 + 0.5));
-
-        data_q[dst_idx].qs[j]  = uint8_t(xi0 | (xi1 << 4));
-    }
-}
-#endif
-
-#if defined(DATA_A_Q5_0)
-void quantize(uint dst_idx, uint src_idx)
-{
-    float amax = 0.0;
-    float vmax = 0.0;
-
-    [[unroll]] for (int j = 0; j < QUANT_K_Q5_0; ++j) {
-        const float v = data_s[src_idx + j];
-        if (amax < abs(v)) {
-            amax = abs(v);
-            vmax = v;
-        }
-    }
-
-    const float d  = vmax / -16;
-    const float id = (d != 0.0) ? 1.0/d : 0.0;
-
-    data_q[dst_idx].d = float16_t(d);
-
-    uint32_t qh = 0;
-    [[unroll]] for (int j = 0; j < QUANT_K_Q5_0/2; ++j) {
-        const float x0 = data_s[src_idx + 0              + j]*id;
-        const float x1 = data_s[src_idx + QUANT_K_Q5_0/2 + j]*id;
-
-        const uint xi0 = min(31, int(x0 + 16.5));
-        const uint xi1 = min(31, int(x1 + 16.5));
-
-        data_q[dst_idx].qs[j]  = uint8_t((xi0 & 0xf) | ((xi1 & 0xf) << 4));
-        qh |= ((xi0 & 0x10u) >> 4) << (j + 0);
-        qh |= ((xi1 & 0x10u) >> 4) << (j + QUANT_K_Q5_0/2);
-    }
-    data_q[dst_idx].qh[0] = uint16_t(qh & 0xFFFF);
-    data_q[dst_idx].qh[1] = uint16_t(qh >> 16);
-}
-#endif
-
-#if defined(DATA_A_Q5_1)
-void quantize(uint dst_idx, uint src_idx)
-{
-    float min = data_s[src_idx + 0];
-    float max = min;
-
-    [[unroll]] for (int j = 1; j < QUANT_K_Q5_1; ++j) {
-        const float v = data_s[src_idx + j];
-        min = v < min ? v : min;
-        max = v > max ? v : max;
-    }
-
-    const float d  = (max - min) / 31;
-    const float id = (d != 0) ? 1.0/d : 0.0;
-
-    data_q[dst_idx].d = float16_t(d);
-    data_q[dst_idx].m = float16_t(min);
-
-    uint32_t qh = 0;
-    [[unroll]] for (int j = 0; j < QUANT_K_Q5_1/2; ++j) {
-        const float x0 = (data_s[src_idx + 0              + j] - min)*id;
-        const float x1 = (data_s[src_idx + QUANT_K_Q5_1/2 + j] - min)*id;
-
-        const uint xi0 = uint(x0 + 0.5);
-        const uint xi1 = uint(x1 + 0.5);
-
-        data_q[dst_idx].qs[j]  = uint8_t((xi0 & 0xf) | ((xi1 & 0xf) << 4));
-        qh |= ((xi0 & 0x10u) >> 4) << (j + 0);
-        qh |= ((xi1 & 0x10u) >> 4) << (j + QUANT_K_Q5_1/2);
-    }
-    data_q[dst_idx].qh = qh;
 }
 #endif
 
 #if defined(DATA_A_Q8_0)
 void quantize(uint dst_idx, uint src_idx)
 {
-    float amax = 0.0; // absolute max
-
-    [[unroll]] for (int j = 0; j < QUANT_K_Q8_0; j++) {
+    float amax = 0.0;
+    for (int j = 0; j < QUANT_K_Q8_0; j++) {
         const float v = data_s[src_idx + j];
         amax = max(amax, abs(v));
     }
-
-    const float d = amax / ((1 << 7) - 1);
+    const float d = amax / 127.0f;
     const float id = (d != 0.0) ? 1.0/d : 0.0;
-
     data_q[dst_idx].d = float16_t(d);
-
-    [[unroll]] for (int j = 0; j < QUANT_K_Q8_0; ++j) {
-        const float x0 = data_s[src_idx + j]*id;
-
-        data_q[dst_idx].qs[j] = int8_t(round(x0));
+    for (int j = 0; j < QUANT_K_Q8_0; ++j) {
+        data_q[dst_idx].qs[j] = int8_t(round(data_s[src_idx + j]*id));
     }
-}
-#endif
-
-#if defined(DATA_A_IQ4_NL)
-uint best_index(float x) {
-    if (x <= kvalues_iq4nl[0]) return 0;
-    if (x >= kvalues_iq4nl[15]) return 15;
-    int ml = 0, mu = 15;
-    while (mu-ml > 1) {
-        int mav = (ml+mu)/2;
-        if (x < kvalues_iq4nl[mav]) mu = mav; else ml = mav;
-    }
-    return x - kvalues_iq4nl[mu-1] < kvalues_iq4nl[mu] - x ? mu-1 : mu;
-}
-
-void quantize(uint dst_idx, uint src_idx)
-{
-    float amax = 0.0;
-    float vmax = 0.0;
-
-    [[unroll]] for (int j = 0; j < QUANT_K_IQ4_NL; ++j) {
-        const float v = data_s[src_idx + j];
-        if (amax < abs(v)) {
-            amax = abs(v);
-            vmax = v;
-        }
-    }
-
-    float d = vmax / kvalues_iq4nl[0];
-    const float id = (d != 0.0) ? 1.0/d : 0.0;
-
-    float sumqx = 0, sumq2 = 0;
-    [[unroll]] for (int j = 0; j < QUANT_K_IQ4_NL/2; ++j) {
-        const float x0 = data_s[src_idx + 0                + j]*id;
-        const float x1 = data_s[src_idx + QUANT_K_IQ4_NL/2 + j]*id;
-        const uint xi0 = best_index(x0);
-        const uint xi1 = best_index(x1);
-        data_q[dst_idx].qs[j] = uint8_t(xi0 | (xi1 << 4));
-        const float v0 = kvalues_iq4nl[xi0];
-        const float v1 = kvalues_iq4nl[xi1];
-        const float w0 = data_s[src_idx + 0                + j]*data_s[src_idx + 0                + j];
-        const float w1 = data_s[src_idx + QUANT_K_IQ4_NL/2 + j]*data_s[src_idx + QUANT_K_IQ4_NL/2 + j];
-        sumqx += w0*v0*data_s[src_idx + j] + w1*v1*data_s[src_idx + QUANT_K_IQ4_NL/2 + j];
-        sumq2 += w0*v0*v0 + w1*v1*v1;
-    }
-
-    data_q[dst_idx].d = float16_t(sumq2 > 0 ? sumqx/sumq2 : d);
-
 }
 #endif
 
@@ -414,67 +123,117 @@ void quantize(uint dst_idx, uint src_idx)
 #if defined(DATA_A_BF16)
 void quantize(uint dst_idx, uint src_idx)
 {
-    data_q[dst_idx] = A_TYPE(fp32_to_bf16(data_s[src_idx]));
+    data_q[dst_idx] = A_TYPE(data_s[src_idx]);
+}
+#endif
+
+#if defined(DATA_A_Q4_1)
+void quantize(uint dst_idx, uint src_idx)
+{
+    float amax = 0.0f;
+    for (int j = 0; j < QUANT_K_Q4_1; ++j) {
+        amax = max(amax, abs(data_s[src_idx + j]));
+    }
+    const float d = amax / -8.0f;
+    const float id = (d != 0.0f) ? 1.0f / d : 0.0f;
+    data_q[dst_idx].d = float16_t(d);
+    for (int j = 0; j < QUANT_K_Q4_1/2; ++j) {
+        const float x0 = data_s[src_idx + 0 + j] * id;
+        const float x1 = data_s[src_idx + QUANT_K_Q4_1/2 + j] * id;
+        const uint xi0 = min(15, int(x0 + 8.5f));
+        const uint xi1 = min(15, int(x1 + 8.5f));
+        data_q[dst_idx].qs[j] = uint8_t(xi0 | (xi1 << 4));
+    }
+}
+#endif
+
+#if defined(DATA_A_Q5_0)
+void quantize(uint dst_idx, uint src_idx)
+{
+    float amax = 0.0f;
+    for (int j = 0; j < QUANT_K_Q5_0; ++j) {
+        amax = max(amax, abs(data_s[src_idx + j]));
+    }
+    const float d = amax / -8.0f;
+    const float id = (d != 0.0f) ? 1.0f / d : 0.0f;
+    data_q[dst_idx].d = float16_t(d);
+    for (int j = 0; j < QUANT_K_Q5_0/2; ++j) {
+        const float x0 = data_s[src_idx + 0 + j] * id;
+        const float x1 = data_s[src_idx + QUANT_K_Q5_0/2 + j] * id;
+        const uint xi0 = min(15, int(x0 + 8.5f));
+        const uint xi1 = min(15, int(x1 + 8.5f));
+        data_q[dst_idx].qs[j] = uint8_t(xi0 | (xi1 << 4));
+    }
+}
+#endif
+
+#if defined(DATA_A_Q5_1)
+void quantize(uint dst_idx, uint src_idx)
+{
+    float amax = 0.0f;
+    for (int j = 0; j < QUANT_K_Q5_1; ++j) {
+        amax = max(amax, abs(data_s[src_idx + j]));
+    }
+    const float d = amax / -8.0f;
+    const float id = (d != 0.0f) ? 1.0f / d : 0.0f;
+    data_q[dst_idx].d = float16_t(d);
+    for (int j = 0; j < QUANT_K_Q5_1/2; ++j) {
+        const float x0 = data_s[src_idx + 0 + j] * id;
+        const float x1 = data_s[src_idx + QUANT_K_Q5_1/2 + j] * id;
+        const uint xi0 = min(15, int(x0 + 8.5f));
+        const uint xi1 = min(15, int(x1 + 8.5f));
+        data_q[dst_idx].qs[j] = uint8_t(xi0 | (xi1 << 4));
+    }
+}
+#endif
+
+#if defined(DATA_A_IQ4_NL)
+void quantize(uint dst_idx, uint src_idx)
+{
+    float amax = 0.0f;
+    for (int j = 0; j < QUANT_K_IQ4_NL; ++j) {
+        amax = max(amax, abs(data_s[src_idx + j]));
+    }
+    const float d = amax / -8.0f;
+    const float id = (d != 0.0f) ? 1.0f / d : 0.0f;
+    data_q[dst_idx].d = float16_t(d);
+    for (int j = 0; j < QUANT_K_IQ4_NL/2; ++j) {
+        const float x0 = data_s[src_idx + 0 + j] * id;
+        const float x1 = data_s[src_idx + QUANT_K_IQ4_NL/2 + j] * id;
+        const uint xi0 = min(15, int(x0 + 8.5f));
+        const uint xi1 = min(15, int(x1 + 8.5f));
+        data_q[dst_idx].qs[j] = uint8_t(xi0 | (xi1 << 4));
+    }
 }
 #endif
 
 #if defined(SET_ROWS)
-
 void main() {
-#ifdef NEEDS_INIT_IQ_SHMEM
-    init_iq_shmem(gl_WorkGroupSize);
-#endif
-
 #if defined(DATA_A_TQ4_0)
     const uint num_blocks = (p.ne + 255) / 256;
     uint block_idx = gl_WorkGroupID.x;
-    if (block_idx >= num_blocks) {
-        return;
-    }
-    uint tid = gl_LocalInvocationID.x;
-    uint src_idx = block_idx * 256 + tid;
-    uint dst_idx = block_idx;
-    quantize(dst_idx, src_idx);
+    if (block_idx >= num_blocks) return;
+    uint src_idx = block_idx * 256 + gl_LocalInvocationID.x;
+    quantize(block_idx, src_idx);
 #else
     const uint idx = ((gl_WorkGroupID.z * 262144 + gl_WorkGroupID.y * 512 + gl_WorkGroupID.x) * BLOCK_SIZE + gl_LocalInvocationID.x) * QUANT_K;
-
-    if (idx >= p.ne) {
-        return;
-    }
-
+    if (idx >= p.ne) return;
     uint i00, i01, i02, i03;
     get_indices(idx, i00, i01, i02, i03);
-
     uint i12 = fastmod(i03, p.ne12);
     uint i11 = fastmod(i02, p.ne11);
-    uint i10 = i01;
-
-    uint i1 = data_i[src1_idx(i10, i11, i12, 0) + get_boffset()] DATA_I_SWIZZLE;
-
+    uint i1 = data_i[src1_idx(i01, i11, i12, 0) + get_boffset()].x;
     uint src0_idx = src0_idx(i00, i01, i02, i03) + get_aoffset();
     uint dst_idx = dst_idx(i00 / QUANT_K, i1, i02, i03) + get_doffset();
-
     quantize(dst_idx, src0_idx);
 #endif
 }
-
 #else
-
 void main() {
-#ifdef NEEDS_INIT_IQ_SHMEM
-    init_iq_shmem(gl_WorkGroupSize);
-#endif
-
     const uint idx = (gl_WorkGroupID.z * 262144 + gl_WorkGroupID.y * 512 + gl_WorkGroupID.x * 32 + gl_LocalInvocationID.x) * QUANT_K;
-
-    if (idx >= p.ne) {
-        return;
-    }
-
+    if (idx >= p.ne) return;
     uint dst_idx = dst_idx_quant(idx, QUANT_K);
     uint src_idx = get_aoffset() + src0_idx(idx);
-
     quantize(dst_idx, src_idx);
 }
-
 #endif

@@ -442,7 +442,8 @@ vec2 get_dm(uint ib, uint a_offset) {
 #if defined(DATA_A_TQ4_0)
 vec2 dequantize(uint ib, uint iqs, uint a_offset) {
     const uint vui = uint(data_a[a_offset + ib].qs[iqs/2]);
-    return (vec2(vui & 0xF, vui >> 4) - 8.0f) * vec2(float(data_a[a_offset + ib].d), float(data_a[a_offset + ib].d));
+    const float d = float(data_a[a_offset + ib].d);
+    return (vec2(vui & 0xF, vui >> 4) - 8.0f) * d;
 }
 vec4 dequantize4(uint ib, uint iqs, uint a_offset) {
     vec2 v0 = dequantize(ib, iqs, a_offset);
