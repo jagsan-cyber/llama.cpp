@@ -53,12 +53,12 @@ Enable TurboQuant by passing the KV cache quantization flags:
 
 ---
 
-## 🧠 Under the Hood
+🧠 Under the Hood
 
 The project leverages RDNA3.5 specific optimizations:
-1. **FWHT (Fast Walsh-Hadamard Transform)**: Implemented in GLSL for low-latency KV cache encoding.
-2. **QJL (Quasi-Joint-Lattice) Correction**: Maintains high precision (0.000 rel. error) even with high compression ratios.
-3. **Deep Vulkan Integration**: TQ logic is inlined into `flash_attn` kernels to eliminate CPU-GPU sync overhead on APUs.
+* **Exact FWHT / Inverse WHT:** Implemented precise Forward and Inverse Fast Walsh-Hadamard Transforms in GLSL for low-latency, high-accuracy KV cache encoding and decoding.
+* **Deep Flash Attention Integration:** TQ logic is deeply inlined into `flash_attn` kernels. This completely eliminates CPU-GPU sync overhead on APUs and maximizes generation speed.
+* **Symmetric VRAM Efficiency:** Achieves up to 3x~6x real-world VRAM compression without sacrificing generation stability (PPL), enabling massive context on local hardware.
 
 ---
 
