@@ -75,14 +75,12 @@ struct block_q4_0_packed16
 struct block_tq4_0
 {
     uint8_t qs[64];
-    uint8_t qjl[16];
     float16_t d;
     float16_t padding;
 };
 struct block_tq4_0_packed16
 {
     uint8_t qs[64];
-    uint8_t qjl[16];
     float16_t d;
     float16_t padding;
 };

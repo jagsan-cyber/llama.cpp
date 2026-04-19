@@ -135,30 +135,6 @@ void quantize(uint dst_idx, uint src_idx) {
             }
         }
         sum = subgroupAdd(sum);
-        
-        uint8_t qjl_bit = (sum >= 0.0f) ? uint8_t(1) : uint8_t(0);
-        float qjl_sign = (qjl_bit != 0) ? 1.0f : -1.0f;
-        
-        // Write qjl bits to proper location
-        uint qjl_byte_idx = tid / 8;
-        uint qjl_bit_idx = tid % 8;
-        
-        // Store in qjl field (bytes 8-23)
-        if (qjl_byte_idx < 16) {
-            if (qjl_bit_idx < 4) {
-                // Lower 4 bits
-            } else {
-                // Upper 4 bits - handled separately
-            }
-        }
-        
-        // Apply QJL correction
-        for (uint j = 0; j < 8; j++) {
-            uint elem_idx = tid * 8 + j;
-            if (elem_idx < head_dim) {
-                shared_memory[elem_idx] -= qjl_sign * 3.14159265358979f * 0.5f / float(head_dim) * abs(shared_memory[elem_idx]);
-            }
-        }
     }
     
     // All threads reach this barrier
@@ -213,21 +189,6 @@ void quantize(uint dst_idx, uint src_idx) {
         uint xi0 = min(15u, uint(x0 + 8.5f));
         uint xi1 = min(15u, uint(x1 + 8.5f));
         data_q[dst_idx].qs[tid] = uint8_t(xi0 | (xi1 << 4));
-    }
-    
-    // Write qjl bits - only tid < 16 needed
-    barrier();
-    if (tid < 16) {
-        uint qjl_byte = 0u;
-        for (uint bit = 0u; bit < 8u; bit++) {
-            uint t = tid * 8u + bit;
-            if (t < head_dim) {
-                float v = shared_memory[t];
-                uint bit_val = ((v * tq_sign1[t] * tq_sign2[t] * inv_sqrt_d) >= 0.0f) ? 1u : 0u;
-                qjl_byte |= (bit_val << bit);
-            }
-        }
-        data_q[dst_idx].qjl[tid] = uint8_t(qjl_byte);
     }
 }
 #endif

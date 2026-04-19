@@ -28,7 +28,6 @@ const bool KV_bounds_check = Clamp != 0;
 const uint TQ_HEAD_DIM = 128;
 const uint TQ_BLOCK_ELEMENTS = TQ_HEAD_DIM;
 const float TQ_INV_SQRT_D = 1.0f / sqrt(float(TQ_HEAD_DIM));
-const float TQ_QJL_SCALE = 3.14159265358979f * 0.5f / float(TQ_HEAD_DIM);
 
 layout (push_constant) uniform parameter {
     uint32_t N;
@@ -273,7 +272,6 @@ void gqaStore(const in uint32_t r, const in uint32_t c, const in FLOAT_TYPEV4 el
 
 layout (binding = 7) readonly buffer TQ_SIGN1 { float tq_sign1[]; };
 layout (binding = 8) readonly buffer TQ_SIGN2 { float tq_sign2[]; };
-layout (binding = 9) readonly buffer TQ_QJL_PROJ { float tq_qjl_proj[]; };
 
 void tq4_fwht_inverse(shared FLOAT_TYPE data[], const uint head_dim) {
     for (uint h = 1; h < head_dim; h <<= 1) {
@@ -291,29 +289,6 @@ void tq4_fwht_inverse(shared FLOAT_TYPE data[], const uint head_dim) {
     }
     for (uint i = 0; i < head_dim; i++) {
         data[i] = data[i] * FLOAT_TYPE(TQ_INV_SQRT_D);
-    }
-}
-
-void tq4_qjl_correction(shared FLOAT_TYPE data[], const uint head_dim) {
-    const uint tid = gl_LocalInvocationIndex;
-    const uint block_dim = gl_WorkGroupSize.x;
-    const uint n_threads = (head_dim + block_dim - 1) / block_dim;
-    
-    for (uint iter = 0; iter < n_threads; iter++) {
-        uint row = iter;
-        if (row >= head_dim) break;
-        
-        FLOAT_TYPE dot_product = FLOAT_TYPE(0.0f);
-        
-        for (uint k = 0; k < head_dim; k++) {
-            dot_product += data[k] * FLOAT_TYPE(tq_qjl_proj[row * head_dim + k]);
-        }
-        
-        barrier();
-        
-        data[row] += dot_product * FLOAT_TYPE(TQ_QJL_SCALE);
-        
-        barrier();
     }
 }
 
@@ -344,7 +319,8 @@ void tq4_decode_block_KV(shared FLOAT_TYPE target_shmem[],
         float d_val = is_k ? float(k_packed.k_data_packed16[k_offset + block_idx].d)
                           : float(v_packed.v_data_packed16[k_offset + block_idx].d);
         
-        float val = (float(q_val) - 8.0f) * d_val;
+        // Match CPU dequant exactly: q_val * d (simple, no transforms)
+float val = float(q_val) * d_val;
         
         target_shmem[block_idx * head_dim + elem_idx] = FLOAT_TYPE(val);
     }
@@ -355,62 +331,30 @@ void tq4_decode_block_KV(shared FLOAT_TYPE target_shmem[],
     for (uint block_idx = 0; block_idx < n_blocks; block_idx++) {
         uint base_idx = block_idx * head_dim;
         
-        // All threads initialize their value, but only tid < 128 will be used
+        // Step 1: Apply sign2 (CPU: x_wht[j] = x_rot[j] * sign2[j] * inv_sqrt_d)
+        // So inverse: val * sign2 = x_rot
         FLOAT_TYPE val = (tid < head_dim) ? target_shmem[base_idx + tid] * FLOAT_TYPE(tq_sign2[tid]) : FLOAT_TYPE(0.0f);
         
-        // WHT Butterfly with Subgroup Shuffle for h < subgroup_size, uniform barrier for larger
-        for (uint h = 1; h < head_dim; h <<= 1) {
-            if (tid < head_dim) {
-                uint partner = tid ^ h;
-                FLOAT_TYPE other = target_shmem[base_idx + partner] * FLOAT_TYPE(tq_sign2[partner]);
-                if ((tid & h) == 0) {
-                    val = val + other;
+        barrier();
+        
+        // Step 2: Inverse WHT butterfly
+        for (uint s = head_dim / 2; s >= 1; s >>= 1) {
+            if (tid < head_dim && tid < s * 2) {
+                uint partner = tid ^ s;
+                FLOAT_TYPE other = target_shmem[base_idx + partner];
+                if ((tid & s) == 0) {
+                    val = (val + other) * FLOAT_TYPE(0.5f);
                 } else {
-                    val = val - other;
+                    val = (val - other) * FLOAT_TYPE(0.5f);
                 }
-                
-                // Use subgroup shuffle for small h, barrier for large h
-                if (h < subgroup_size) {
-                    val = val + subgroupShuffleXor(val, h);
-                }
-            }
-            
-            // Uniform barrier - all threads must reach here
-            barrier();
-            
-            if (tid < head_dim) {
                 target_shmem[base_idx + tid] = val;
             }
-            
-            // All threads reach barrier
             barrier();
         }
         
-        // Only tid < 128 continue with scaling and QJL
+        // Step 3: Apply sign1 (CPU: x_rot[j] = x_orig[j] * sign1[j])
         if (tid < head_dim) {
-            val = val * FLOAT_TYPE(TQ_INV_SQRT_D);
-            val = val * FLOAT_TYPE(tq_sign1[tid]);
-            
-            // Parallel QJL dot product using subgroup reduction
-            FLOAT_TYPE dot = FLOAT_TYPE(0.0f);
-            for (uint k = tid; k < head_dim; k += subgroup_size) {
-                dot += target_shmem[base_idx + k] * FLOAT_TYPE(tq_qjl_proj[tid * head_dim + k]);
-            }
-            
-            // Subgroup reduction for dot product
-            for (uint s = subgroup_size / 2; s > 0; s >>= 1) {
-                dot += subgroupShuffleXor(dot, s);
-            }
-            
-            // Correct qjl field access
-            uint8_t qjl_byte = is_k 
-                ? k_packed.k_data_packed16[k_offset + block_idx].qjl[tid / 8]
-                : v_packed.v_data_packed16[k_offset + block_idx].qjl[tid / 8];
-            uint qjl_bit = (qjl_byte >> (tid % 8)) & 1;
-            float qjl_sign = qjl_bit ? 1.0f : -1.0f;
-            
-            val = val + FLOAT_TYPE(qjl_sign * TQ_QJL_SCALE) * dot;
-            
+            val = target_shmem[base_idx + tid] * FLOAT_TYPE(tq_sign1[tid]);
             target_shmem[base_idx + tid] = val;
         }
         
