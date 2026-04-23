@@ -52,12 +52,12 @@
 struct block_q4_0
 {
     float16_t d;
-    uint8_t qs[16];
+    uint32_t qs[4];
 };
 struct block_q4_0_packed16
 {
     float16_t d;
-    uint16_t qs[16/2];
+    uint16_t qs[8];
 };
 
 #if defined(DATA_A_Q4_0)

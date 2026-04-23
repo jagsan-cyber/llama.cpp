@@ -68,5 +68,14 @@ The project leverages RDNA3.5 specific optimizations:
 
 ---
 
+## 📜 Update History / 更新履歴
+
+### 2026-04-23
+- **RDNA2 (gfx103x) Support**: tq4_0 KV cache now supports Wave32 architecture (e.g., Radeon 680M) using dynamic gl_SubgroupSize indexing.
+- **Improved Compiler Portability**: Replaced uint8_t with uint32_t bit-packing in Vulkan shaders to ensure compatibility with various Vulkan SDK versions (fixing glslc/glslang errors).
+- **Bug Fix**: Resolved SIGSEGV during warmup on UMA/iGPU systems.
+
+---
+
 ## 📜 License
 This project inherits the MIT License of `llama.cpp`.

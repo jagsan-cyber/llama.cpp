@@ -157,10 +157,12 @@ void quantize(uint dst_idx, uint src_idx) {
     barrier();
     
     // Final max reduction across subgroups
+    // Use dynamic subgroup_size instead of hardcoded 64 for Wave32 (RDNA2) compatibility
     if (tid < 32) {
         float local_max = amax;
-        for (uint s = 32; s < 256; s <<= 1) {
-            if (tid + s < 256) {
+        const uint subgroup_size = gl_SubgroupSize;
+        for (uint s = subgroup_size; s < subgroup_size * 8; s <<= 1) {
+            if (tid + s < subgroup_size * 8) {
                 local_max = max(local_max, amax);
             }
         }

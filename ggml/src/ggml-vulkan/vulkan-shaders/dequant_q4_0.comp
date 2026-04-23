@@ -1,5 +1,7 @@
 #version 450
 
+#extension GL_KHR_shader_subgroup_basic : enable
+
 #include "dequant_head.glsl"
 
 layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
@@ -8,23 +10,33 @@ layout (binding = 0) readonly buffer A {block_q4_0 data_a[];};
 layout (binding = 1) writeonly buffer D {D_TYPE data_b[];};
 
 void main() {
-    const uint i = gl_WorkGroupID.x * 4 + gl_LocalInvocationID.x / 64;
+    // NOTE: local_size_x = 256 works for both Wave32 (RDNA2, 8 subgroups)
+    // and Wave64 (RDNA3+, 4 subgroups). Adjust indexing dynamically.
+    const uint subgroup_size = gl_SubgroupSize;
+    const uint num_subgroups = gl_WorkGroupSize.x / subgroup_size; // 4 for Wave64, 8 for Wave32
 
-    const uint tid = gl_LocalInvocationID.x % 64;
-    const uint il  = tid/32;
-    const uint ir  = tid%32;
-    const uint ib = 32*i + ir;
+    // Each Block processes 4 elements: adjust based on actual subgroup size
+    // Wave64: i = WG*4 + lid/64, Wave32: i = WG*8 + lid/32
+    const uint elems_per_subgroup = subgroup_size / 8; // 8 for Wave64, 4 for Wave32
+    const uint i = gl_WorkGroupID.x * num_subgroups + gl_LocalInvocationID.x / subgroup_size;
+
+    const uint tid = gl_LocalInvocationID.x % subgroup_size;
+    const uint il  = tid/subgroup_size;   // always 0 on both Wave32/Wave64 (subgroup_size >= 32)
+    const uint ir  = tid%subgroup_size;
+    const uint ib = elems_per_subgroup*i + ir;
     if (ib >= p.nel / 32) {
         return;
     }
 
-    const uint q_idx = 8*il;
-    const uint b_idx = 1024*i + 32*ir + q_idx;
+    const uint q_idx = 8*il;  // il==0 on both Wave sizes, so q_idx==0
+    const uint b_idx = 32*elems_per_subgroup*i + 32*ir + q_idx;
 
     const float d = float(data_a[ib].d);
 
     [[unroll]] for (uint l = 0; l < 8; ++l) {
-        data_b[b_idx + l +  0] = D_TYPE(d * ((data_a[ib].qs[q_idx + l] & 0xF) - 8.0f));
-        data_b[b_idx + l + 16] = D_TYPE(d * ((data_a[ib].qs[q_idx + l] >>  4) - 8.0f));
+        const uint qs_word = data_a[ib].qs[l / 4];
+        const uint qs_byte = (qs_word >> ((l % 4) * 8)) & 0xFF;
+        data_b[b_idx + l +  0] = D_TYPE(d * ((qs_byte & 0xF) - 8.0f));
+        data_b[b_idx + l + 16] = D_TYPE(d * ((qs_byte >> 4) - 8.0f));
     }
 }
