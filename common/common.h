@@ -341,8 +341,8 @@ struct common_params_speculative {
     int32_t n_ctx        = 0;  // draft context size
     int32_t n_gpu_layers = -1; // number of layers to store in VRAM for the draft model (-1 - use default)
 
-    ggml_type cache_type_k = GGML_TYPE_F16; // KV cache data type for the K
-    ggml_type cache_type_v = GGML_TYPE_F16; // KV cache data type for the V
+    ggml_type cache_type_k = GGML_TYPE_Q8_0; // KV cache data type for the K (Q8_0 for precision)
+    ggml_type cache_type_v = GGML_TYPE_Q8_0; // KV cache data type for the V (Q8_0 - Vulkan FA requires symmetric KV)
 
     struct cpu_params cpuparams;
     struct cpu_params cpuparams_batch;
@@ -546,8 +546,8 @@ struct common_params {
 
     bool single_turn       = false; // single turn chat conversation
 
-    ggml_type cache_type_k = GGML_TYPE_F16; // KV cache data type for the K
-    ggml_type cache_type_v = GGML_TYPE_F16; // KV cache data type for the V
+    ggml_type cache_type_k = GGML_TYPE_Q8_0; // KV cache data type for the K (Q8_0 for precision)
+    ggml_type cache_type_v = GGML_TYPE_Q8_0; // KV cache data type for the V (Q8_0 - Vulkan FA requires symmetric KV)
 
     common_conversation_mode conversation_mode = COMMON_CONVERSATION_MODE_AUTO;
 

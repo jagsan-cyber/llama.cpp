@@ -13,7 +13,7 @@ shared float shared_memory[128];
 
 layout (binding = 7) readonly buffer TQ_SIGN1 { float tq_sign1[]; };
 layout (binding = 8) readonly buffer TQ_SIGN2 { float tq_sign2[]; };
-layout (binding = 9) readonly buffer TQ_QJL_PROJ { float tq_qjl_proj[]; };
+// QJL removed - no longer needed for quality improvement
 #elif defined(SET_ROWS) && QUANT_K == 1
 layout(local_size_x = 512, local_size_y = 1, local_size_z = 1) in;
 const uint BLOCK_SIZE = 512;
