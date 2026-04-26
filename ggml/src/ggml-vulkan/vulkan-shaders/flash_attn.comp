@@ -50,12 +50,6 @@ shared FLOAT_TYPEV4 kvsh[SHMEM_STAGING != 0 ? Bc * kvsh_stride : 1];
 
 shared vec4 occupancy_limiter[LIMIT_OCCUPANCY_SHMEM > 0 ? LIMIT_OCCUPANCY_SHMEM : 1];
 
-#if defined(DATA_A_TQ4_0)
-const uint32_t TQ4_SHMEM_KV_SIZE = Bc * 128;
-shared FLOAT_TYPE tq_k_shmem[TQ4_SHMEM_KV_SIZE];
-shared FLOAT_TYPE tq_v_shmem[TQ4_SHMEM_KV_SIZE];
-#endif
-
 void main() {
 #ifdef NEEDS_INIT_IQ_SHMEM
     init_iq_shmem(gl_WorkGroupSize);
@@ -202,8 +196,8 @@ void main() {
         if (SHMEM_STAGING != 0) {
             barrier();
 #if defined(DATA_A_TQ4_0)
-            tq4_decode_block_KV(tq_k_shmem, k_offset + j * Bc * (64 / 16), true);
-            tq4_decode_block_KV(tq_v_shmem, v_offset + j * Bc * (64 / 16), false);
+            tq4_decode_and_store_k(k_offset + j * Bc * (128 / 16));
+            tq4_decode_and_store_v(v_offset + j * Bc * (128 / 16));
             barrier();
 #else
             [[unroll]] for (uint32_t idx = 0; idx < Bc * HSK / 4; idx += gl_WorkGroupSize.x) {
@@ -244,18 +238,15 @@ void main() {
                     }
 
                     FLOAT_TYPEV4 K_Tf;
+                    FLOAT_TYPEV4 V_Tf;
                     if (SHMEM_STAGING != 0) {
 #if defined(DATA_A_TQ4_0)
                         uint k_block = c * cols_per_iter + col_tid;
                         uint k_offset_elem = (d * D_split + d_tid);
-                        K_Tf = FLOAT_TYPEV4(tq_k_shmem[k_block * 128 + k_offset_elem],
-                                           tq_k_shmem[k_block * 128 + k_offset_elem + 1],
-                                           tq_k_shmem[k_block * 128 + k_offset_elem + 2],
-                                           tq_k_shmem[k_block * 128 + k_offset_elem + 3]);
-                        V_Tf = FLOAT_TYPEV4(tq_v_shmem[v_block * 128 + v_offset_elem],
-                                           tq_v_shmem[v_block * 128 + v_offset_elem + 1],
-                                           tq_v_shmem[v_block * 128 + v_offset_elem + 2],
-                                           tq_v_shmem[v_block * 128 + v_offset_elem + 3]);
+                        uint v_block = c * cols_per_iter + col_tid;
+                        uint v_offset_elem = (d * D_split + d_tid);
+                        K_Tf = tq4_dequantize_k(k_block, k_offset_elem);
+                        V_Tf = tq4_dequantize_v(v_block, v_offset_elem);
 #else
                         K_Tf = kvsh[(c * cols_per_iter + col_tid) * kvsh_stride + (d * D_split + d_tid)];
 #endif
@@ -282,18 +273,15 @@ void main() {
 
                 [[unroll]] for (uint32_t d = 0; d < HSK_per_thread / 4; ++d) {
                     FLOAT_TYPEV4 K_Tf;
+                    FLOAT_TYPEV4 V_Tf;
                     if (SHMEM_STAGING != 0) {
 #if defined(DATA_A_TQ4_0)
                         uint k_block = c * cols_per_iter + col_tid;
                         uint k_offset_elem = (d * D_split + d_tid);
-                        K_Tf = FLOAT_TYPEV4(tq_k_shmem[k_block * 128 + k_offset_elem],
-                                           tq_k_shmem[k_block * 128 + k_offset_elem + 1],
-                                           tq_k_shmem[k_block * 128 + k_offset_elem + 2],
-                                           tq_k_shmem[k_block * 128 + k_offset_elem + 3]);
-                        V_Tf = FLOAT_TYPEV4(tq_v_shmem[v_block * 128 + v_offset_elem],
-                                           tq_v_shmem[v_block * 128 + v_offset_elem + 1],
-                                           tq_v_shmem[v_block * 128 + v_offset_elem + 2],
-                                           tq_v_shmem[v_block * 128 + v_offset_elem + 3]);
+                        uint v_block = c * cols_per_iter + col_tid;
+                        uint v_offset_elem = (d * D_split + d_tid);
+                        K_Tf = tq4_dequantize_k(k_block, k_offset_elem);
+                        V_Tf = tq4_dequantize_v(v_block, v_offset_elem);
 #else
                         K_Tf = kvsh[(c * cols_per_iter + col_tid) * kvsh_stride + (d * D_split + d_tid)];
 #endif
