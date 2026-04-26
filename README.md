@@ -8,58 +8,51 @@
 
 [Manifesto](https://github.com/ggml-org/llama.cpp/discussions/205) / [ggml](https://github.com/ggml-org/ggml) / [ops](https://github.com/ggml-org/llama.cpp/blob/master/docs/ops.md)
 
-## AMD Vulkan Support (RDNA3.5 / Ryzen AI 300)
+## AMD Vulkan Support (RDNA2 / RDNA3 / RDNA3.5)
 
-This fork includes **AMD RDNA3.5 stability fixes** for Vulkan backend.
-
-### AMD Flash Attention is not supported
-
-On AMD GPUs (Ryzen AI 300 / RDNA3.5), Vulkan Flash Attention is unstable and causes:
-- GPU hangs
-- device-lost errors
-- barrier deadlocks
-- LDS out-of-bounds access
-
-Flash Attention is **automatically disabled** on AMD GPUs via the AMD FA Guard.
+This fork includes **AMD RDNA series (RDNA2, RDNA3, RDNA3.5 / Ryzen AI 300)** stability fixes and performance optimizations for the Vulkan backend.
 
 ### AMD Flash Attention Guard
 
-The AMD FA Guard provides:
+On AMD GPUs, Vulkan Flash Attention can be unstable in certain configurations. To ensure reliability, this fork implements the **AMD FA Guard**:
 
-- Automatic detection of AMD GPUs via `vendor_id`
-- Flash Attention disabled by default
-- Clear error messages when FA is attempted
-- Opt-in override: `LLAMA_VULKAN_AMD_FORCE_FA=1` (use at your own risk)
+- **Automatic Protection:** Detects AMD GPUs and disables Flash Attention by default to prevent GPU hangs or device-lost errors.
+- **Safety First:** Flash Attention is disabled by default for maximum stability.
+- **Opt-in Override:** If you wish to experiment, use `LLAMA_VULKAN_AMD_FORCE_FA=1` (use at your own risk).
 
-### What works on AMD
+### TQ4_0 Vulkan Support
+
+This fork introduces **TQ4_0 (TuboQuant 4-bit)** support for the Vulkan backend, specifically optimized for AMD hardware.
 
 | Setting | Status | Notes |
 |---------|--------|-------|
-| FA OFF + F16 KV | ✅ Works | Classic attention path |
-| FA ON | ❌ Blocked | Guard prevents hangs |
-| FA OFF + Quantized KV | ❌ Unsupported | llama.cpp requires FA for quantized KV |
+| FA OFF + F16 KV | ✅ Works | Classic attention path, highly stable |
+| FA ON | ⚠️ Limited | Protected by FA Guard; use `--fa 0` for stability |
+| **TQ4_0 KV Cache** | ✅ **Works** | **Supported via specialized Vulkan kernels** |
 
-### Why Quantized KV Cannot Run on AMD
+### Recommended Configuration for AMD GPUs
 
-llama.cpp enforces: `quantized V cache requires flash_attn`
+For the best balance of performance and stability on RDNA2, RDNA3, and RDNA3.5 hardware, use the following flags:
 
-Since FA is disabled on AMD, **quantized KV (Q4_0 / TQ4_0) cannot be used**.
-
-This is a design constraint in upstream llama.cpp, not a bug in this fork.
-
-### Stable Configuration for AMD
-
-```
---device vulkan0 -fa 0 -ctk f16 -ctv f16
+```bash
+# Recommended stable run with TQ4_0 KV cache
+llama-cli -m model.gguf --device vulkan0 --fa 0 --kv-type tq4_0
 ```
 
-This is the only stable configuration for AMD GPUs at this time.
+- `--fa 0`: Disables Flash Attention for stability (highly recommended for AMD).
+- `--kv-type tq4_0`: Enables 4-bit quantized KV cache for significantly reduced VRAM usage.
 
-### Test Results (RDNA3.5 / AMD Radeon 860M)
+### Compatible Hardware
 
-- FA OFF + F16 KV → **SUCCESS** (exit 0)
-- FA ON → **Blocked by AMD FA Guard** (error logs shown)
-- All tests passed
+- **RDNA3.5:** Ryzen AI 300 series (Radeon 880M / 890M)
+- **RDNA3:** Radeon RX 7000 series, Radeon 700M series
+- **RDNA2:** Radeon RX 6000 series, Radeon 600M series
+
+### Known Limitations
+
+- AMD Flash Attention remains experimental and is disabled by default.
+- Some edge cases in Vulkan drivers may still cause issues; ensure you have the latest drivers installed.
+
 
 ---
 
