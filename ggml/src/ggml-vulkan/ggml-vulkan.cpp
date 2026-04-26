@@ -8949,14 +8949,23 @@ static bool ggml_vk_flash_attn_coopmat_shmem_support(const vk_device& device, co
 }
 
 static void ggml_vk_flash_attn(ggml_backend_vk_context * ctx, vk_context& subctx, const ggml_tensor * q, const ggml_tensor * k, const ggml_tensor * v, const ggml_tensor * mask, const ggml_tensor * sinks, ggml_tensor * dst) {
-    VK_LOG_DEBUG("ggml_vk_flash_attn((" << q << ", name=" << q->name << ", type=" << q->type << ", ne0=" << q->ne[0] << ", ne1=" << q->ne[1] << ", ne2=" << q->ne[2] << ", ne3=" << q->ne[3] << ", nb0=" << q->nb[0] << ", nb1=" << q->nb[1] << ", nb2=" << q->nb[2] << ", nb3=" << q->nb[3];
-    std::cerr << "), (" << k << ", name=" << k->name << ", type=" << k->type << ", ne0=" << k->ne[0] << ", ne1=" << k->ne[1] << ", ne2=" << k->ne[2] << ", ne3=" << k->ne[3] << ", nb0=" << k->nb[0] << ", nb1=" << k->nb[1] << ", nb2=" << k->nb[2] << ", nb3=" << k->nb[3];
-    std::cerr << "), (" << v << ", name=" << v->name << ", type=" << v->type << ", ne0=" << v->ne[0] << ", ne1=" << v->ne[1] << ", ne2=" << v->ne[2] << ", ne3=" << v->ne[3] << ", nb0=" << v->nb[0] << ", nb1=" << v->nb[1] << ", nb2=" << v->nb[2] << ", nb3=" << v->nb[3];
-    std::cerr << "), (" << dst << ", name=" << dst->name << ", type=" << dst->type << ", ne0=" << dst->ne[0] << ", ne1=" << dst->ne[1] << ", ne2=" << dst->ne[2] << ", ne3=" << dst->ne[3] << ", nb0=" << dst->nb[0] << ", nb1=" << dst->nb[1] << ", nb2=" << dst->nb[2] << ", nb3=" << dst->nb[3];
-    if (sinks) {
-        std::cerr << "), (" << sinks << ", name=" << sinks->name << ", type=" << sinks->type << ", ne0=" << sinks->ne[0] << ", ne1=" << sinks->ne[1] << ", ne2=" << sinks->ne[2] << ", ne3=" << sinks->ne[3] << ", nb0=" << sinks->nb[0] << ", nb1=" << sinks->nb[1] << ", nb2=" << sinks->nb[2] << ", nb3=" << sinks->nb[3];
+    // AMD GPUs: Vulkan Flash Attention is unstable on RDNA3.5 and hangs/crashes
+    // Default: disabled on AMD. Use LLAMA_VULKAN_AMD_FORCE_FA=1 to force enable.
+    bool amd_force_fa = false;
+    if (ctx->device->vendor_id == VK_VENDOR_ID_AMD) {
+        const char* env_force = std::getenv("LLAMA_VULKAN_AMD_FORCE_FA");
+        amd_force_fa = (env_force && strcmp(env_force, "1") == 0);
+        if (!amd_force_fa) {
+            std::cerr << "[ERROR] Vulkan Flash Attention is disabled on AMD GPUs due to instability." << std::endl;
+            std::cerr << "[ERROR] Use -fa 0 or set LLAMA_VULKAN_AMD_FORCE_FA=1 for escape hatch." << std::endl;
+            return;
+        }
+        std::cerr << "[WARN] Forcing Vulkan Flash Attention on AMD GPU (may hang/crash)." << std::endl;
     }
-    std::cerr << "))");
+
+    std::cerr << "[VK-FA] ggml_vk_flash_attn ENTERED, vendor=0x" << std::hex << ctx->device->vendor_id << std::dec << ", amd_force_fa=" << amd_force_fa << std::endl;
+
+    std::cerr << "[DEBUG] ggml_vk_flash_attn params: q_type=" << q->type << ", k_type=" << k->type << ", v_type=" << v->type << std::endl;
 
     GGML_TENSOR_LOCALS(int64_t, neq, q,   ne)
     GGML_TENSOR_LOCALS(size_t,  nbq, q,   nb)
