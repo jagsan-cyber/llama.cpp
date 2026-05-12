@@ -3,6 +3,18 @@
 #if defined(GGML_COMMON_DECL_C)
 #include <stdint.h>
 
+#ifndef BLOCK_TQ4_0_DEFINED
+#define BLOCK_TQ4_0_DEFINED
+#define QK_TQ4_0 128
+typedef struct {
+    uint8_t qs[64];
+    int8_t qjl[16];
+    uint16_t d;
+    uint16_t padding;
+} block_tq4_0;
+#endif
+
+
 typedef uint16_t ggml_half;
 typedef uint32_t ggml_half2;
 

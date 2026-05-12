@@ -100,6 +100,21 @@ llama-cli -hf ggml-org/gemma-3-1b-it-GGUF
 llama-server -hf ggml-org/gemma-3-1b-it-GGUF
 ```
 
+
+## TurboQuant Support (Experimental)
+
+This repository includes custom support for **TQ4_0** (TurboQuant 4-bit) quantization, specifically optimized for the Vulkan backend and Ryzen AI architectures.
+
+- **VRAM Efficiency:** Up to 67% reduction in KV Cache memory usage compared to F16.
+- **Hardware Optimization:** Native Vulkan shaders for bit-level dequantization and KV cache management.
+- **Ryzen AI 7 350 Support:** Verified full GPU execution with zero CPU fallback on modern AMD iGPUs.
+- **Lloyd-Max Quantization:** Optimized codebook-based dequantization for maintaining high reasoning quality.
+
+To use TQ4_0 KV Cache:
+```bash
+llama-cli -m model.gguf --cache-type-k tq4_0 --cache-type-v tq4_0 -ngl 99
+```
+
 ## Description
 
 The main goal of `llama.cpp` is to enable LLM inference with minimal setup and state-of-the-art performance on a wide

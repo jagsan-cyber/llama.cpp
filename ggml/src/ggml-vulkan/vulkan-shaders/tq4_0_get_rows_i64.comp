@@ -1,0 +1,34 @@
+#version 450
+#extension GL_EXT_shader_explicit_arithmetic_types_int8 : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int64 : require
+#extension GL_EXT_shader_explicit_arithmetic_types_float16 : require
+#extension GL_EXT_shader_16bit_storage : require
+struct block_tq4_0 { uint8_t qs[64]; int8_t qjl[16]; float16_t d; float16_t padding; };
+layout (push_constant) uniform parameter {
+    uint ne; uint ne00; uint ne01; uint ne02; uint ne03; uint nb00; uint nb01; uint nb02; uint nb03;
+    uint ne10; uint ne11; uint ne12; uint ne13; uint nb10; uint nb11; uint nb12; uint nb13;
+    uint ne20; uint ne21; uint ne22; uint ne23; uint nb20; uint nb21; uint nb22; uint nb23;
+    uint misalign_offsets;
+} p;
+uint get_aoffset() { return p.misalign_offsets >> 16; }
+uint get_doffset() { return p.misalign_offsets & 0xFFFF; }
+
+layout (binding = 0) readonly buffer A {block_tq4_0 data_a[];};
+layout (binding = 1) readonly buffer B {int64_t data_b[];};
+layout (binding = 2) writeonly buffer D {float data_d[];};
+layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
+void main() {
+    uint i = gl_GlobalInvocationID.x;
+    if (i >= p.ne01 * p.ne02 * p.ne03) return;
+    uint row = uint(data_b[i]);
+    uint blocks_per_row = p.ne00 / 128;
+    for (uint b = 0; b < blocks_per_row; b++) {
+        uint block_idx = get_aoffset() + row * blocks_per_row + b;
+        float d = float(data_a[block_idx].d);
+        for (uint j = 0; j < 64; j++) {
+            uint vui = uint(data_a[block_idx].qs[j]);
+            data_d[i * p.ne00 + b * 128 + j * 2 + 0] = float(int(data_a[block_idx].qjl[vui & 0x0F])) * d;
+            data_d[i * p.ne00 + b * 128 + j * 2 + 1] = float(int(data_a[block_idx].qjl[vui >> 4])) * d;
+        }
+    }
+}

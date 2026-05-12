@@ -598,6 +598,15 @@ void matmul_shaders(bool fp16, MatMulIdType matmul_id_type, bool coopmat, bool c
 }
 
 void process_shaders() {
+
+    {
+        string_to_spv("get_rows_tq4_0_i32", "tq4_0_get_rows_i32.comp", {});
+        string_to_spv("get_rows_tq4_0_i64", "tq4_0_get_rows_i64.comp", {});
+        string_to_spv("set_rows_tq4_0_i32", "tq4_0_set_rows_i32.comp", {});
+        string_to_spv("set_rows_tq4_0_i64", "tq4_0_set_rows_i64.comp", {});
+        string_to_spv("dequant_tq4_0", "tq4_0_dequant.comp", {});
+    }
+
     // matmul
     for (const MatMulIdType& matmul_id_type : {MatMulIdType::NONE, MatMulIdType::DEFAULT, MatMulIdType::SUBGROUP}) {
         // No coopmats

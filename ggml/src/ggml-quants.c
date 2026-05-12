@@ -5489,3 +5489,24 @@ bool ggml_validate_row_data(enum ggml_type type, const void * data, size_t nbyte
 
     return true;
 }
+
+#include <string.h>
+static float tq_fp16_to_fp32_val_rigor10(uint16_t h) {
+    uint32_t w = (uint32_t)(h & 0x7FFF) << 13;
+    uint32_t exp = (uint32_t)(h & 0x7C00) >> 10;
+    if (exp != 0) w += (uint32_t)(exp + (127 - 15)) << 23;
+    w |= (uint32_t)(h & 0x8000) << 16;
+    float f; memcpy(&f, &w, 4); return f;
+}
+void dequantize_row_tq4_0(const void * vx, float * y, int64_t k) {
+    const block_tq4_0 * x = (const block_tq4_0 *)vx;
+    const int64_t nb = k / 128;
+    for (int64_t i = 0; i < nb; ++i) {
+        const float d = tq_fp16_to_fp32_val_rigor10(x[i].d);
+        for (int j = 0; j < 64; ++j) {
+            y[2*j+0] = (float)x[i].qjl[x[i].qs[j] & 0x0F] * d;
+            y[2*j+1] = (float)x[i].qjl[x[i].qs[j] >> 4] * d;
+        }
+        y += 128;
+    }
+}

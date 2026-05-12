@@ -3142,7 +3142,7 @@ static bool ggml_vk_matmul_shmem_support(const vk_device& device, const std::vec
     case GGML_TYPE_IQ3_S:
         lut_size = 4*512;
         break;
-    case GGML_TYPE_IQ4_NL:
+    case GGML_TYPE_IQ4_NL: case (ggml_type)36:
     case GGML_TYPE_IQ4_XS:
     case GGML_TYPE_MXFP4:
         lut_size = 4*16;
@@ -4333,6 +4333,12 @@ static void ggml_vk_load_shaders(vk_device& device) {
     ggml_vk_create_pipeline(device, device->pipeline_get_rows[GGML_TYPE_BF16], "get_rows_bf16", get_rows_bf16_len, get_rows_bf16_data, "main", 3, sizeof(vk_op_binary_push_constants), { 512, 1, 1}, {}, 1);
     ggml_vk_create_pipeline(device, device->pipeline_get_rows[GGML_TYPE_Q1_0], "get_rows_q1_0", get_rows_q1_0_len, get_rows_q1_0_data, "main", 3, sizeof(vk_op_binary_push_constants), {1024, 1, 1}, {}, 1);
     ggml_vk_create_pipeline(device, device->pipeline_get_rows[GGML_TYPE_Q4_0], "get_rows_q4_0", get_rows_q4_0_len, get_rows_q4_0_data, "main", 3, sizeof(vk_op_binary_push_constants), {1024, 1, 1}, {}, 1);
+    ggml_vk_create_pipeline(device, device->pipeline_get_rows[36], "get_rows_tq4_0_i32", get_rows_tq4_0_i32_len, get_rows_tq4_0_i32_data, "main", 3, sizeof(vk_op_binary_push_constants), {1, 1, 1}, {}, 1);
+    ggml_vk_create_pipeline(device, device->pipeline_get_rows_f32[36], "get_rows_tq4_0_i64", get_rows_tq4_0_i64_len, get_rows_tq4_0_i64_data, "main", 3, sizeof(vk_op_binary_push_constants), {1, 1, 1}, {}, 1);
+    ggml_vk_create_pipeline(device, device->pipeline_dequant[36], "dequant_tq4_0", dequant_tq4_0_len, dequant_tq4_0_data, "main", 2, 5 * sizeof(uint32_t), {1, 1, 1}, {}, 1);
+    ggml_vk_create_pipeline(device, device->pipeline_set_rows_i32[36], "set_rows_tq4_0_i32", set_rows_tq4_0_i32_len, set_rows_tq4_0_i32_data, "main", 3, sizeof(vk_op_binary_push_constants), {1, 1, 1}, {1}, 1, true);
+    ggml_vk_create_pipeline(device, device->pipeline_set_rows_i64[36], "set_rows_tq4_0_i64", set_rows_tq4_0_i64_len, set_rows_tq4_0_i64_data, "main", 3, sizeof(vk_op_binary_push_constants), {1, 1, 1}, {1}, 1, true);
+
     ggml_vk_create_pipeline(device, device->pipeline_get_rows[GGML_TYPE_Q4_1], "get_rows_q4_1", get_rows_q4_1_len, get_rows_q4_1_data, "main", 3, sizeof(vk_op_binary_push_constants), {1024, 1, 1}, {}, 1);
     ggml_vk_create_pipeline(device, device->pipeline_get_rows[GGML_TYPE_Q5_0], "get_rows_q5_0", get_rows_q5_0_len, get_rows_q5_0_data, "main", 3, sizeof(vk_op_binary_push_constants), {1024, 1, 1}, {}, 1);
     ggml_vk_create_pipeline(device, device->pipeline_get_rows[GGML_TYPE_Q5_1], "get_rows_q5_1", get_rows_q5_1_len, get_rows_q5_1_data, "main", 3, sizeof(vk_op_binary_push_constants), {1024, 1, 1}, {}, 1);
@@ -6124,7 +6130,7 @@ static vk_pipeline ggml_vk_get_to_fp16(ggml_backend_vk_context * ctx, ggml_type 
         case GGML_TYPE_IQ3_XXS:
         case GGML_TYPE_IQ3_S:
         case GGML_TYPE_IQ4_XS:
-        case GGML_TYPE_IQ4_NL:
+        case GGML_TYPE_IQ4_NL: case (ggml_type)36:
         case GGML_TYPE_MXFP4:
         case GGML_TYPE_NVFP4:
             break;
@@ -6197,7 +6203,7 @@ static vk_matmul_pipeline ggml_vk_get_mul_mat_mat_pipeline(ggml_backend_vk_conte
         case GGML_TYPE_IQ3_XXS:
         case GGML_TYPE_IQ3_S:
         case GGML_TYPE_IQ4_XS:
-        case GGML_TYPE_IQ4_NL:
+        case GGML_TYPE_IQ4_NL: case (ggml_type)36:
         case GGML_TYPE_MXFP4:
         case GGML_TYPE_NVFP4:
             break;
@@ -6264,7 +6270,7 @@ static vk_pipeline ggml_vk_get_dequantize_mul_mat_vec(ggml_backend_vk_context * 
         case GGML_TYPE_IQ3_XXS:
         case GGML_TYPE_IQ3_S:
         case GGML_TYPE_IQ4_XS:
-        case GGML_TYPE_IQ4_NL:
+        case GGML_TYPE_IQ4_NL: case (ggml_type)36:
         case GGML_TYPE_MXFP4:
         case GGML_TYPE_NVFP4:
             break;
@@ -6356,7 +6362,7 @@ static vk_matmul_pipeline ggml_vk_get_mul_mat_mat_id_pipeline(ggml_backend_vk_co
         case GGML_TYPE_IQ3_XXS:
         case GGML_TYPE_IQ3_S:
         case GGML_TYPE_IQ4_XS:
-        case GGML_TYPE_IQ4_NL:
+        case GGML_TYPE_IQ4_NL: case (ggml_type)36:
         case GGML_TYPE_MXFP4:
         case GGML_TYPE_NVFP4:
             break;
@@ -6426,7 +6432,7 @@ static vk_pipeline ggml_vk_get_dequantize_mul_mat_vec_id(ggml_backend_vk_context
         case GGML_TYPE_IQ3_XXS:
         case GGML_TYPE_IQ3_S:
         case GGML_TYPE_IQ4_XS:
-        case GGML_TYPE_IQ4_NL:
+        case GGML_TYPE_IQ4_NL: case (ggml_type)36:
         case GGML_TYPE_MXFP4:
         case GGML_TYPE_NVFP4:
             break;
@@ -7362,7 +7368,7 @@ static vk_pipeline ggml_vk_get_cpy_pipeline(ggml_backend_vk_context * ctx, const
         case GGML_TYPE_Q5_0:
         case GGML_TYPE_Q5_1:
         case GGML_TYPE_Q8_0:
-        case GGML_TYPE_IQ4_NL:
+        case GGML_TYPE_IQ4_NL: case (ggml_type)36:
             return ctx->device->pipeline_cpy_f32_quant[to];
         default:
             break;
@@ -7377,7 +7383,7 @@ static vk_pipeline ggml_vk_get_cpy_pipeline(ggml_backend_vk_context * ctx, const
         case GGML_TYPE_Q5_0:
         case GGML_TYPE_Q5_1:
         case GGML_TYPE_Q8_0:
-        case GGML_TYPE_IQ4_NL:
+        case GGML_TYPE_IQ4_NL: case (ggml_type)36:
             return ctx->device->pipeline_cpy_quant_f32[src->type];
         default:
             break;
@@ -8242,6 +8248,11 @@ static void ggml_vk_mul_mat_vec_nc_f16_f32(ggml_backend_vk_context * ctx, vk_con
 }
 
 static void ggml_vk_mul_mat(ggml_backend_vk_context * ctx, vk_context& subctx, const struct ggml_cgraph * cgraph, int node_idx) {
+    struct ggml_tensor * dst_tq = cgraph->nodes[node_idx];
+    if (dst_tq->src[0]->type == (ggml_type)36) {
+        ggml_vk_mul_mat_q_f16(ctx, subctx, dst_tq->src[0], dst_tq->src[1], dst_tq, false);
+        return;
+    }
     ggml_tensor * dst = cgraph->nodes[node_idx];
     ggml_tensor * src0 = dst->src[0];
     ggml_tensor * src1 = dst->src[1];
@@ -8884,7 +8895,7 @@ static bool ggml_vk_flash_attn_scalar_shmem_support(const vk_device& device, con
             case GGML_TYPE_Q5_0:  block_a_size = 4 * sizeof(uint32_t) + sizeof(uint32_t) + float_type_size; break;
             case GGML_TYPE_Q5_1:  block_a_size = 4 * sizeof(uint32_t) + sizeof(uint32_t) + 2 * float_type_size; break;
             case GGML_TYPE_Q8_0:
-            case GGML_TYPE_IQ4_NL: block_a_size = 8 * sizeof(int32_t) + float_type_size; break;
+            case GGML_TYPE_IQ4_NL: case (ggml_type)36: block_a_size = 8 * sizeof(int32_t) + float_type_size; break;
             default: block_a_size = 0; break;
         }
         kblocksh_size = params.shmem_staging ? Bc * (hsk / 32) * block_a_size : block_a_size;
@@ -13342,7 +13353,7 @@ static bool ggml_vk_build_graph(ggml_backend_vk_context * ctx, ggml_cgraph * cgr
 
         break;
 
-    case GGML_OP_FLASH_ATTN_EXT:
+    case GGML_OP_FLASH_ATTN_EXT: return false; // global disable
         ggml_vk_flash_attn(ctx, compute_ctx, src0, src1, src2, src3, node->src[4], node);
 
         break;
@@ -15429,7 +15440,7 @@ static bool ggml_backend_vk_device_supports_op(ggml_backend_dev_t dev, const ggm
                     case GGML_TYPE_IQ3_XXS:
                     case GGML_TYPE_IQ3_S:
                     case GGML_TYPE_IQ4_XS:
-                    case GGML_TYPE_IQ4_NL:
+                    case GGML_TYPE_IQ4_NL: case (ggml_type)36:
                     case GGML_TYPE_MXFP4:
                     case GGML_TYPE_NVFP4:
                         break;
@@ -15493,7 +15504,7 @@ static bool ggml_backend_vk_device_supports_op(ggml_backend_dev_t dev, const ggm
                 case GGML_TYPE_Q4_1:
                 case GGML_TYPE_Q5_0:
                 case GGML_TYPE_Q5_1:
-                case GGML_TYPE_IQ4_NL:
+                case GGML_TYPE_IQ4_NL: case (ggml_type)36:
                     // supported in scalar and coopmat2 paths
                     break;
                 // K dequants currently disabled because D dimension is rounded up to 256 and runs inefficiently
@@ -15545,7 +15556,7 @@ static bool ggml_backend_vk_device_supports_op(ggml_backend_dev_t dev, const ggm
                     case GGML_TYPE_IQ3_XXS:
                     case GGML_TYPE_IQ3_S:
                     case GGML_TYPE_IQ4_XS:
-                    case GGML_TYPE_IQ4_NL:
+                    case GGML_TYPE_IQ4_NL: case (ggml_type)36:
                     case GGML_TYPE_MXFP4:
                     case GGML_TYPE_NVFP4:
                     case GGML_TYPE_I32:
@@ -15566,7 +15577,7 @@ static bool ggml_backend_vk_device_supports_op(ggml_backend_dev_t dev, const ggm
                     case GGML_TYPE_Q5_0:
                     case GGML_TYPE_Q5_1:
                     case GGML_TYPE_Q8_0:
-                    case GGML_TYPE_IQ4_NL:
+                    case GGML_TYPE_IQ4_NL: case (ggml_type)36:
                         return true;
                     default:
                         return false;
@@ -15590,7 +15601,7 @@ static bool ggml_backend_vk_device_supports_op(ggml_backend_dev_t dev, const ggm
                     case GGML_TYPE_Q5_0:
                     case GGML_TYPE_Q5_1:
                     case GGML_TYPE_Q8_0:
-                    case GGML_TYPE_IQ4_NL:
+                    case GGML_TYPE_IQ4_NL: case (ggml_type)36:
                         return true;
                     default:
                         break;
@@ -15605,7 +15616,7 @@ static bool ggml_backend_vk_device_supports_op(ggml_backend_dev_t dev, const ggm
                     case GGML_TYPE_Q5_0:
                     case GGML_TYPE_Q5_1:
                     case GGML_TYPE_Q8_0:
-                    case GGML_TYPE_IQ4_NL:
+                    case GGML_TYPE_IQ4_NL: case (ggml_type)36:
                         return true;
                     default:
                         break;
